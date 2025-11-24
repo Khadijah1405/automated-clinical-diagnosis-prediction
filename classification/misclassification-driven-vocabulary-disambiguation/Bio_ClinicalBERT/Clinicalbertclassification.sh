@@ -80,8 +80,6 @@ else
     exit 1
 fi
 
-cd /home/khsh060f/ws/horse/khsh060f-rp-workspace/rp_backup/synthetic-ophthalmology-text-classification 
-
 echo "GPU Information:"
 nvidia-smi
 
@@ -95,8 +93,8 @@ echo "Max sequence length: 192"
 echo "Analysis samples: 100 (safe for small classes)"
 echo "============================================"
 
-python -u clinicalbert_classification_pipeline.py \
-  --csv_file /home/khsh060f/ws/horse/khsh060f-rp-workspace/rp_backup/hcup_processed_medical_dataset_with_labels.csv \
+python -u automated-clinical-diagnosis-prediction/classification/misclassification-driven-vocabulary-disambiguation/Bio_ClinicalBERT/clinicalbert_classification_pipeline.py \
+  --csv_file /hcup_processed_medical_dataset_with_labels.csv \
   --synonyms true \
   --balance true \
   --batch_size 96 \
