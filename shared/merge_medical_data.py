@@ -4,6 +4,7 @@ import numpy as np
 def merge_medical_csvs():
     """
     Merge discharge.csv, diagnoses_icd.csv, and d_icd_diagnoses.csv into a single comprehensive CSV
+    with aggregated diagnosis information to avoid row duplication
     """
     
     try:
@@ -30,7 +31,6 @@ def merge_medical_csvs():
         print("\nStarting merge process...")
         
         # Step 1: Merge diagnoses with ICD descriptions
-        # This links icd_code with its long_title description
         print("Step 1: Merging diagnoses with ICD descriptions...")
         diagnoses_with_descriptions = pd.merge(
             diagnoses_df, 
@@ -40,11 +40,31 @@ def merge_medical_csvs():
         )
         print(f"After merging diagnoses with descriptions: {len(diagnoses_with_descriptions)} rows")
         
-        # Step 2: Merge with discharge notes
-        # This links subject_id and hadm_id with discharge text
-        print("Step 2: Merging with discharge notes...")
+        # Step 2: Aggregate diagnosis information by subject_id and hadm_id
+        print("Step 2: Aggregating diagnosis information...")
+        
+        # Function to safely join non-null values
+        def safe_join(series, separator=', '):
+            # Remove NaN values and convert to string
+            clean_values = series.dropna().astype(str)
+            if len(clean_values) == 0:
+                return np.nan
+            return separator.join(clean_values)
+        
+        # Group by subject_id and hadm_id, then aggregate the diagnosis columns
+        aggregated_diagnoses = diagnoses_with_descriptions.groupby(['subject_id', 'hadm_id']).agg({
+            'seq_num': lambda x: safe_join(x, ', '),
+            'icd_code': lambda x: safe_join(x, ', '),
+            'icd_version': lambda x: safe_join(x, ', '),
+            'long_title': lambda x: safe_join(x, ' | ')  # Using | separator for better readability of long titles
+        }).reset_index()
+        
+        print(f"After aggregating diagnoses: {len(aggregated_diagnoses)} rows")
+        
+        # Step 3: Merge with discharge notes
+        print("Step 3: Merging with discharge notes...")
         final_merged = pd.merge(
-            diagnoses_with_descriptions,
+            aggregated_diagnoses,
             discharge_df[['subject_id', 'hadm_id', 'text']], 
             on=['subject_id', 'hadm_id'], 
             how='inner'
@@ -63,7 +83,6 @@ def merge_medical_csvs():
         available_columns = [col for col in desired_columns if col in final_merged.columns]
         final_df = final_merged[available_columns].copy()
         
-        # Handle missing values - keep them as they are (NaN will be preserved)
         print(f"\nFinal dataset shape: {final_df.shape}")
         print(f"Columns: {list(final_df.columns)}")
         
@@ -75,7 +94,7 @@ def merge_medical_csvs():
                 print(f"  {col}: {missing_count} missing values")
         
         # Save to new CSV
-        output_filename = 'merged_medical_data.csv'
+        output_filename = 'merged_medical_data_with_comma.csv'
         final_df.to_csv(output_filename, index=False)
         print(f"\nMerged data saved to: {output_filename}")
         
@@ -90,11 +109,14 @@ def merge_medical_csvs():
                     print(f"  {col}: [MISSING]")
                 elif col == 'text' and len(str(value)) > 100:
                     print(f"  {col}: {str(value)[:100]}...")
+                elif col in ['seq_num', 'icd_code', 'icd_version', 'long_title'] and len(str(value)) > 150:
+                    print(f"  {col}: {str(value)[:150]}...")
                 else:
                     print(f"  {col}: {value}")
             print("-" * 50)
         
         print(f"\n✅ Successfully created merged dataset with {len(final_df)} rows")
+        print("✅ Diagnosis information has been aggregated to avoid row duplication")
         return final_df
         
     except FileNotFoundError as e:
@@ -120,23 +142,69 @@ def validate_merge_results(df):
     print(f"Total records: {len(df)}")
     print(f"Unique subjects: {df['subject_id'].nunique()}")
     print(f"Unique admissions: {df['hadm_id'].nunique()}")
-    print(f"Unique ICD codes: {df['icd_code'].nunique()}")
+    
+    # Count total ICD codes across all rows
+    total_icd_codes = 0
+    for idx, row in df.iterrows():
+        if pd.notna(row['icd_code']):
+            icd_codes = str(row['icd_code']).split(', ')
+            total_icd_codes += len(icd_codes)
+    
+    print(f"Total ICD codes across all records: {total_icd_codes}")
     
     # Check for subjects with multiple admissions
     subjects_multi_admissions = df.groupby('subject_id')['hadm_id'].nunique()
     multi_admission_subjects = subjects_multi_admissions[subjects_multi_admissions > 1]
     print(f"Subjects with multiple admissions: {len(multi_admission_subjects)}")
     
-    # Check for admissions with multiple diagnoses
-    admissions_multi_diagnoses = df.groupby('hadm_id')['icd_code'].nunique()
-    multi_diagnosis_admissions = admissions_multi_diagnoses[admissions_multi_diagnoses > 1]
-    print(f"Admissions with multiple diagnoses: {len(multi_diagnosis_admissions)}")
+    # Show statistics about diagnosis aggregation
+    print("\nDiagnosis aggregation statistics:")
+    
+    # Count how many admissions have multiple diagnoses
+    multi_diagnosis_count = 0
+    max_diagnoses = 0
+    
+    for idx, row in df.iterrows():
+        if pd.notna(row['icd_code']):
+            icd_count = len(str(row['icd_code']).split(', '))
+            if icd_count > 1:
+                multi_diagnosis_count += 1
+            max_diagnoses = max(max_diagnoses, icd_count)
+    
+    print(f"Admissions with multiple diagnoses: {multi_diagnosis_count}")
+    print(f"Maximum diagnoses per admission: {max_diagnoses}")
+
+def analyze_diagnosis_distribution(df):
+    """
+    Analyze how diagnoses are distributed across admissions
+    """
+    print("\n" + "="*60)
+    print("DIAGNOSIS DISTRIBUTION ANALYSIS")
+    print("="*60)
+    
+    diagnosis_counts = []
+    
+    for idx, row in df.iterrows():
+        if pd.notna(row['icd_code']):
+            icd_count = len(str(row['icd_code']).split(', '))
+            diagnosis_counts.append(icd_count)
+        else:
+            diagnosis_counts.append(0)
+    
+    diagnosis_counts = pd.Series(diagnosis_counts)
+    
+    print("Distribution of number of diagnoses per admission:")
+    print(diagnosis_counts.value_counts().sort_index())
+    
+    print(f"\nAverage diagnoses per admission: {diagnosis_counts.mean():.2f}")
+    print(f"Median diagnoses per admission: {diagnosis_counts.median():.2f}")
 
 if __name__ == "__main__":
-    print("Medical CSV Merger")
-    print("=" * 50)
+    print("Medical CSV Merger (with Diagnosis Aggregation)")
+    print("=" * 60)
     print("This script merges discharge.csv, diagnoses_icd.csv, and d_icd_diagnoses.csv")
-    print("into a single comprehensive dataset.\n")
+    print("into a single comprehensive dataset with aggregated diagnosis information.")
+    print("Multiple diagnoses per admission are combined into comma-separated values.\n")
     
     # Perform the merge
     merged_df = merge_medical_csvs()
@@ -144,8 +212,10 @@ if __name__ == "__main__":
     # Validate results if merge was successful
     if merged_df is not None:
         validate_merge_results(merged_df)
+        analyze_diagnosis_distribution(merged_df)
         
         print("\n" + "="*60)
         print("✅ MERGE COMPLETED SUCCESSFULLY!")
         print("✅ Output file: merged_medical_data.csv")
+        print("✅ No duplicate rows - diagnosis data aggregated!")
         print("="*60)
