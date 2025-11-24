@@ -95,7 +95,7 @@ echo "Max sequence length: 192"
 echo "Analysis samples: 100 (safe for small classes)"
 echo "============================================"
 
-python -u clinicalbertclassification.py \
+python -u clinicalbert_classification_pipeline.py \
   --csv_file /home/khsh060f/ws/horse/khsh060f-rp-workspace/rp_backup/hcup_processed_medical_dataset_with_labels.csv \
   --synonyms true \
   --balance true \
