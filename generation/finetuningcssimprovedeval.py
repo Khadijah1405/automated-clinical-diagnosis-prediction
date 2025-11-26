@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 Generative Medical Diagnosis: Direct LLaMA Text Generation with Hugging Face
@@ -5,6 +6,7 @@ Generative Medical Diagnosis: Direct LLaMA Text Generation with Hugging Face
 - Direct text generation for medical diagnoses
 - Enhanced evaluation for generative outputs
 - Standard PyTorch training approach
+- Simplified Medical Evaluator with Multiple Similarity Metrics
 """
 
 # ============================ EARLY ENV SETUP ============================
@@ -35,6 +37,60 @@ from peft import LoraConfig, TaskType, get_peft_model, AutoPeftModelForCausalLM
 
 # GPU Memory Monitoring
 import subprocess
+from difflib import SequenceMatcher
+
+# Simple imports with fallbacks for similarity calculations
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    print("Warning: sentence-transformers not available. Install with: pip install sentence-transformers")
+
+try:
+    from fuzzywuzzy import fuzz, process
+    FUZZYWUZZY_AVAILABLE = True
+except ImportError:
+    FUZZYWUZZY_AVAILABLE = False
+    print("Warning: fuzzywuzzy not available. Install with: pip install fuzzywuzzy[speedup]")
+
+try:
+    from transformers import AutoTokenizer, AutoModel
+    import torch
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    print("Warning: transformers not available. Install with: pip install transformers")
+
+try:
+    from sklearn.metrics.pairwise import cosine_similarity
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    print("Warning: sklearn not available. Install with: pip install scikit-learn")
+
+# Text generation metrics
+try:
+    from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
+    from rouge_score import rouge_scorer
+    import nltk
+    nltk.download('punkt', quiet=True)
+    TEXT_METRICS_AVAILABLE = True
+except ImportError:
+    TEXT_METRICS_AVAILABLE = False
+    print("Warning: NLTK/ROUGE not available. Install with: pip install nltk rouge-score")
+
+# Additional imports for enhanced evaluation
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # Use non-interactive backend
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from sklearn.metrics import confusion_matrix
+    PLOTTING_AVAILABLE = True
+except ImportError:
+    PLOTTING_AVAILABLE = False
+    print("Warning: plotting libraries not available. Install with: pip install matplotlib seaborn")
 
 def log_gpu_memory(context=""):
     """Log current GPU memory usage"""
@@ -415,7 +471,6 @@ class GenerativeMedicalFineTuner:
         log_gpu_memory("After Trainer Setup")
 
         # Train
-        # Train
         try:
             print("Starting training...")
             log_gpu_memory("Training Start")
@@ -440,7 +495,6 @@ class GenerativeMedicalFineTuner:
                         latest_checkpoint = checkpoint_nums[-1][1]  # Get the name of latest checkpoint
                         resume_path = os.path.join(out_dir, latest_checkpoint)
                         
-                        # Verify checkpoint is valid
                         # Verify checkpoint is valid
                         checkpoint_files = [
                             'adapter_model.safetensors', 'trainer_state.json', 'training_args.bin'
@@ -508,7 +562,6 @@ class GenerativeMedicalFineTuner:
             import traceback
             traceback.print_exc()
             return None
-            
 
     def run_full_pipeline(self, train_file: str, val_file: str) -> bool:
         """Run the complete training pipeline"""
@@ -659,135 +712,618 @@ class GenerativeMedicalInference:
             return "", {'error': str(e)}
 
 # =========================================================================
-# Enhanced Evaluation for Generative Output
+# Simplified Medical Evaluator with Multiple Similarity Metrics
 # =========================================================================
 
-class GenerativeEvaluator:
-    """Evaluates generative medical diagnosis outputs"""
+class SimpleMedicalEvaluator:
+    """Clean and simple medical evaluator with multiple similarity metrics"""
     
-    def __init__(self, inference_model: GenerativeMedicalInference):
+    def __init__(self, inference_model):
         self.inference = inference_model
         
-    def evaluate_semantic_similarity(self, pred: str, target: str) -> float:
-        """Calculate semantic similarity between predicted and target diagnosis"""
+        # Load BERT models
+        self.clinical_bert = None
+        self.general_bert = None
+        self._load_bert_models()
+        
+        # Initialize text generation scorers
+        self.rouge_scorer = None
+        self.smoothing_function = None
+        if TEXT_METRICS_AVAILABLE:
+            try:
+                self.rouge_scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+                self.smoothing_function = SmoothingFunction().method1
+                print("Text generation metrics (BLEU, ROUGE) available")
+            except Exception as e:
+                print(f"Warning: Text generation metrics failed to initialize: {e}")
+        
+        # Different thresholds for different similarity types
+        self.jaccard_thresholds = {
+            'high': 0.7,    # Jaccard: high overlap
+            'medium': 0.4,  # Jaccard: moderate overlap
+            'low': 0.2      # Jaccard: some overlap
+        }
+        
+        self.bert_thresholds = {
+            'high': 0.85,   # BERT: very similar semantically
+            'medium': 0.7,  # BERT: moderately similar
+            'low': 0.5      # BERT: somewhat similar
+        }
+        
+        self.general_thresholds = {
+            'high': 0.8,    # For character, cosine
+            'medium': 0.6,
+            'low': 0.4
+        }
+        
+        self.text_gen_thresholds = {
+            'high': 0.7,    # For BLEU, ROUGE scores
+            'medium': 0.5,
+            'low': 0.3
+        }
+    
+    def _load_bert_models(self):
+        """Load both BERT models with correct approach"""
+        
+        # Load Clinical BERT using transformers (not sentence-transformers)
+        if TRANSFORMERS_AVAILABLE:
+            try:
+                from transformers import AutoTokenizer, AutoModel
+                self.clinical_bert_tokenizer = AutoTokenizer.from_pretrained('emilyalsentzer/Bio_ClinicalBERT')
+                self.clinical_bert_model = AutoModel.from_pretrained('emilyalsentzer/Bio_ClinicalBERT')
+                print("✅ Loaded Clinical BERT (Bio_ClinicalBERT)")
+            except Exception as e:
+                print(f"⚠️ Failed to load Clinical BERT: {e}")
+                self.clinical_bert_tokenizer = None
+                self.clinical_bert_model = None
+        else:
+            print("⚠️ Transformers not available - Clinical BERT disabled")
+            self.clinical_bert_tokenizer = None
+            self.clinical_bert_model = None
+        
+        # Load General BERT using sentence-transformers
+        if SENTENCE_TRANSFORMERS_AVAILABLE:
+            try:
+                self.general_bert = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+                print("✅ Loaded General BERT (all-MiniLM-L6-v2)") 
+            except Exception as e:
+                print(f"⚠️ Failed to load General BERT: {e}")
+                self.general_bert = None
+        else:
+            print("⚠️ SentenceTransformers not available - General BERT disabled")
+            self.general_bert = None
+    
+    def word_similarity(self, pred: str, target: str) -> float:
+        """Word-to-word similarity using Jaccard index"""
         if not pred or not target:
             return 0.0
-            
-        # Simple exact match
-        if pred.lower().strip() == target.lower().strip():
-            return 1.0
         
-        # Partial matching strategies
+        # Simple normalization - just lowercase
         pred_words = set(pred.lower().split())
         target_words = set(target.lower().split())
         
-        # Jaccard similarity
-        if len(pred_words | target_words) == 0:
+        if not pred_words or not target_words:
             return 0.0
         
-        jaccard = len(pred_words & target_words) / len(pred_words | target_words)
+        intersection = len(pred_words & target_words)
+        union = len(pred_words | target_words)
         
-        # Check if key medical terms match
-        key_medical_overlap = 0
-        medical_terms = {'disease', 'syndrome', 'disorder', 'infection', 'cancer', 
-                        'failure', 'deficiency', 'injury', 'pain', 'inflammation'}
-        
-        pred_medical = pred_words & medical_terms
-        target_medical = target_words & medical_terms
-        
-        if pred_medical and target_medical:
-            key_medical_overlap = len(pred_medical & target_medical) / max(len(pred_medical), len(target_medical))
-        
-        # Weighted score
-        return 0.7 * jaccard + 0.3 * key_medical_overlap
+        return intersection / union if union > 0 else 0.0
     
-    def comprehensive_evaluation(self, test_file: str, max_samples: int = 500) -> Dict:
-        """Run comprehensive evaluation of generative model"""
-        print(f"Starting generative evaluation on up to {max_samples} samples...")
+    def character_similarity(self, pred: str, target: str) -> float:
+        """Character-to-character similarity"""
+        if not pred or not target:
+            return 0.0
+        
+        # Simple normalization
+        pred_clean = pred.lower().strip()
+        target_clean = target.lower().strip()
+        
+        if pred_clean == target_clean:
+            return 1.0
+        
+        # Use SequenceMatcher for character-level similarity
+        return SequenceMatcher(None, pred_clean, target_clean).ratio()
+    
+    def jaccard_index(self, pred: str, target: str) -> float:
+        """Traditional Jaccard index calculation"""
+        if not pred or not target:
+            return 0.0
+        
+        # Character-level Jaccard
+        pred_chars = set(pred.lower().replace(' ', ''))
+        target_chars = set(target.lower().replace(' ', ''))
+        
+        if not pred_chars or not target_chars:
+            return 0.0
+        
+        intersection = len(pred_chars & target_chars)
+        union = len(pred_chars | target_chars)
+        
+        return intersection / union if union > 0 else 0.0
+    
+    def calculate_text_generation_metrics(self, pred: str, target: str) -> Dict[str, float]:
+        """Calculate BLEU, ROUGE, and other text generation metrics"""
+        metrics = {
+            'bleu_1': 0.0, 'bleu_2': 0.0, 'bleu_3': 0.0, 'bleu_4': 0.0,
+            'rouge_1_f': 0.0, 'rouge_2_f': 0.0, 'rouge_l_f': 0.0,
+            'length_ratio': 0.0, 'exact_match': 0.0
+        }
+        
+        if not pred or not target:
+            return metrics
+        
+        # Exact match
+        metrics['exact_match'] = 1.0 if pred.lower().strip() == target.lower().strip() else 0.0
+        
+        # Length ratio
+        pred_len = len(pred.split())
+        target_len = len(target.split())
+        if target_len > 0:
+            metrics['length_ratio'] = pred_len / target_len
+        
+        if not TEXT_METRICS_AVAILABLE or not self.rouge_scorer:
+            return metrics
+            
+        try:
+            # BLEU scores
+            pred_tokens = pred.lower().split()
+            target_tokens = target.lower().split()
+            
+            if len(pred_tokens) > 0 and len(target_tokens) > 0:
+                for n in range(1, 5):
+                    try:
+                        bleu_score = sentence_bleu(
+                            [target_tokens], pred_tokens, 
+                            weights=tuple([1/n]*n + [0]*(4-n)),
+                            smoothing_function=self.smoothing_function
+                        )
+                        metrics[f'bleu_{n}'] = bleu_score
+                    except:
+                        metrics[f'bleu_{n}'] = 0.0
+            
+            # ROUGE scores
+            rouge_scores = self.rouge_scorer.score(target, pred)
+            metrics['rouge_1_f'] = rouge_scores['rouge1'].fmeasure
+            metrics['rouge_2_f'] = rouge_scores['rouge2'].fmeasure
+            metrics['rouge_l_f'] = rouge_scores['rougeL'].fmeasure
+                
+        except Exception as e:
+            print(f"Error calculating text generation metrics: {e}")
+            
+        return metrics
+    
+    def cosine_similarity_simple(self, pred: str, target: str) -> float:
+        """Simple cosine similarity using character frequency"""
+        if not pred or not target:
+            return 0.0
+        
+        # Create character frequency vectors
+        all_chars = set(pred.lower() + target.lower())
+        
+        pred_vec = [pred.lower().count(char) for char in all_chars]
+        target_vec = [target.lower().count(char) for char in all_chars]
+        
+        if SKLEARN_AVAILABLE:
+            similarity = cosine_similarity([pred_vec], [target_vec])[0][0]
+            return max(0.0, float(similarity))
+        else:
+            # Manual cosine similarity calculation
+            dot_product = sum(a * b for a, b in zip(pred_vec, target_vec))
+            norm_pred = sum(a * a for a in pred_vec) ** 0.5
+            norm_target = sum(b * b for b in target_vec) ** 0.5
+            
+            if norm_pred == 0 or norm_target == 0:
+                return 0.0
+            
+            return dot_product / (norm_pred * norm_target)
+    
+    def clinical_bert_similarity(self, pred: str, target: str) -> float:
+        """Clinical BERT similarity using transformers directly"""
+        if not self.clinical_bert_model or not self.clinical_bert_tokenizer or not pred or not target:
+            return 0.0
+        
+        try:
+            # Tokenize both texts
+            pred_inputs = self.clinical_bert_tokenizer(pred, return_tensors='pt', truncation=True, max_length=512, padding=True)
+            target_inputs = self.clinical_bert_tokenizer(target, return_tensors='pt', truncation=True, max_length=512, padding=True)
+            
+            # Get embeddings
+            with torch.no_grad():
+                pred_outputs = self.clinical_bert_model(**pred_inputs)
+                target_outputs = self.clinical_bert_model(**target_inputs)
+                
+                # Use CLS token embeddings (mean pooling alternative)
+                pred_embedding = pred_outputs.last_hidden_state[:, 0, :].cpu().numpy()  # CLS token
+                target_embedding = target_outputs.last_hidden_state[:, 0, :].cpu().numpy()
+                
+                # Calculate cosine similarity
+                if SKLEARN_AVAILABLE:
+                    similarity = cosine_similarity(pred_embedding, target_embedding)[0][0]
+                    return max(0.0, float(similarity))
+                else:
+                    # Manual cosine similarity
+                    pred_flat = pred_embedding.flatten()
+                    target_flat = target_embedding.flatten()
+                    
+                    dot_product = np.dot(pred_flat, target_flat)
+                    norm_pred = np.linalg.norm(pred_flat)
+                    norm_target = np.linalg.norm(target_flat)
+                    
+                    if norm_pred == 0 or norm_target == 0:
+                        return 0.0
+                    
+                    similarity = dot_product / (norm_pred * norm_target)
+                    return max(0.0, float(similarity))
+                    
+        except Exception as e:
+            print(f"Clinical BERT error: {e}")
+        
+        return 0.0
+    
+    def general_bert_similarity(self, pred: str, target: str) -> float:
+        """General BERT similarity"""
+        if not self.general_bert or not pred or not target:
+            return 0.0
+        
+        try:
+            embeddings = self.general_bert.encode([pred, target])
+            if SKLEARN_AVAILABLE:
+                similarity = cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
+                return max(0.0, float(similarity))
+        except Exception as e:
+            print(f"General BERT error: {e}")
+        
+        return 0.0
+    
+    def calculate_all_similarities(self, pred: str, target: str) -> Dict[str, float]:
+        """Calculate all similarity metrics"""
+        similarities = {
+            'word_similarity': self.word_similarity(pred, target),
+            'character_similarity': self.character_similarity(pred, target),
+            'jaccard_index': self.jaccard_index(pred, target),
+            'cosine_similarity': self.cosine_similarity_simple(pred, target),
+            'clinical_bert': self.clinical_bert_similarity(pred, target),
+            'general_bert': self.general_bert_similarity(pred, target)
+        }
+        
+        # Add text generation metrics
+        text_gen_metrics = self.calculate_text_generation_metrics(pred, target)
+        similarities.update(text_gen_metrics)
+        
+        return similarities
+    
+    def calculate_threshold_stats(self, scores: List[float], metric_type: str = 'general') -> Dict[str, any]:
+        """Calculate threshold statistics with appropriate thresholds for different metrics"""
+        n_total = len(scores)
+        if n_total == 0:
+            return {}
+        
+        # Choose appropriate thresholds based on metric type
+        if metric_type == 'jaccard':
+            thresholds = self.jaccard_thresholds
+            threshold_desc = "Jaccard (≥0.7, ≥0.4, ≥0.2)"
+        elif metric_type == 'bert':
+            thresholds = self.bert_thresholds  
+            threshold_desc = "BERT (≥0.85, ≥0.7, ≥0.5)"
+        elif metric_type == 'text_gen':
+            thresholds = self.text_gen_thresholds
+            threshold_desc = "Text Gen (≥0.7, ≥0.5, ≥0.3)"
+        else:
+            thresholds = self.general_thresholds
+            threshold_desc = "General (≥0.8, ≥0.6, ≥0.4)"
+        
+        # Count samples in each category - 4 categories
+        high_count = sum(1 for s in scores if s >= thresholds['high'])
+        medium_count = sum(1 for s in scores if thresholds['medium'] <= s < thresholds['high'])
+        low_count = sum(1 for s in scores if thresholds['low'] <= s < thresholds['medium'])
+        very_low_count = sum(1 for s in scores if s < thresholds['low'])
+        
+        return {
+            'threshold_description': threshold_desc,
+            'high_count': high_count,
+            'high_percentage': (high_count / n_total) * 100,
+            'medium_count': medium_count, 
+            'medium_percentage': (medium_count / n_total) * 100,
+            'low_count': low_count,
+            'low_percentage': (low_count / n_total) * 100,
+            'very_low_count': very_low_count,
+            'very_low_percentage': (very_low_count / n_total) * 100,
+            'mean_score': np.mean(scores),
+            'median_score': np.median(scores),
+            'std_score': np.std(scores),
+            'min_score': np.min(scores),
+            'max_score': np.max(scores)
+        }
+    
+    def extract_top_diagnoses(self, targets: List[str], top_k: int = 20) -> List[str]:
+        """Extract top K most common diagnoses from targets for confusion matrix"""
+        diagnoses = []
+        
+        for target in targets:
+            if target:
+                # Clean and normalize diagnosis
+                diagnosis = target.lower().strip()
+                # Remove common prefixes/suffixes for better grouping
+                diagnosis = re.sub(r'^(acute|chronic|severe|mild)\s+', '', diagnosis)
+                diagnoses.append(diagnosis)
+        
+        # Get top K most common
+        diagnosis_counts = Counter(diagnoses)
+        top_diagnoses = [diag for diag, _ in diagnosis_counts.most_common(top_k)]
+        
+        return top_diagnoses
+
+    def create_confusion_matrix_data(self, predictions: List[str], targets: List[str], 
+                                   top_diagnoses: List[str]) -> Tuple[List[str], List[str]]:
+        """Create confusion matrix data for top diagnoses"""
+        pred_labels = []
+        true_labels = []
+        
+        for pred, target in zip(predictions, targets):
+            # Normalize for comparison
+            pred_clean = pred.lower().strip() if pred else ""
+            target_clean = target.lower().strip() if target else ""
+            
+            # Remove common prefixes for better matching
+            pred_clean = re.sub(r'^(acute|chronic|severe|mild)\s+', '', pred_clean)
+            target_clean = re.sub(r'^(acute|chronic|severe|mild)\s+', '', target_clean)
+            
+            # Map to top diagnoses or "Other"
+            pred_label = pred_clean if pred_clean in top_diagnoses else "Other"
+            true_label = target_clean if target_clean in top_diagnoses else "Other"
+            
+            pred_labels.append(pred_label)
+            true_labels.append(true_label)
+        
+        return pred_labels, true_labels
+
+    def plot_confusion_matrix(self, y_true: List[str], y_pred: List[str], 
+                            title: str = "Confusion Matrix - Top 20 Diagnoses"):
+        """Create and save confusion matrix plot"""
+        if not PLOTTING_AVAILABLE:
+            print("Plotting not available - skipping confusion matrix")
+            return None, None
+            
+        try:
+            # Get unique labels
+            all_labels = sorted(list(set(y_true + y_pred)))
+            
+            # Create confusion matrix
+            cm = confusion_matrix(y_true, y_pred, labels=all_labels)
+            
+            # Create plot
+            plt.figure(figsize=(15, 12))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                       xticklabels=all_labels, yticklabels=all_labels)
+            plt.title(title, fontsize=14, fontweight='bold')
+            plt.xlabel('Predicted Diagnosis', fontsize=12)
+            plt.ylabel('True Diagnosis', fontsize=12)
+            plt.xticks(rotation=45, ha='right')
+            plt.yticks(rotation=0)
+            plt.tight_layout()
+            
+            # Save plot
+            plt.savefig('confusion_matrix_simple_top20.png', dpi=300, bbox_inches='tight')
+            plt.savefig('confusion_matrix_simple_top20.pdf', bbox_inches='tight')
+            print("Confusion matrix saved as 'confusion_matrix_simple_top20.png' and '.pdf'")
+            
+            return cm, all_labels
+            
+        except Exception as e:
+            print(f"Error creating confusion matrix: {e}")
+            return None, None
+    
+    def evaluate(self, test_file: str, max_samples: int = None) -> Dict:
+        """Main evaluation function"""
+        print(f"Starting evaluation with simplified medical similarity...")
         
         # Load test data
-        with open(test_file, "r", encoding="utf-8") as f:
+        with open(test_file, "r") as f:
             test_data = json.load(f)
         
-        test_data = test_data[:max_samples]
-        print(f"Evaluating on {len(test_data)} samples")
+        if max_samples:
+            test_data = test_data[:max_samples]
         
-        # Track results
+        print(f"Evaluating {len(test_data)} samples")
+        
+        # Store all results
+        all_predictions = []
+        all_targets = []
+        all_similarities = {
+            'word_similarity': [],
+            'character_similarity': [],
+            'jaccard_index': [],
+            'cosine_similarity': [],
+            'clinical_bert': [],
+            'general_bert': [],
+            'bleu_1': [],
+            'bleu_2': [],
+            'bleu_3': [],
+            'bleu_4': [],
+            'rouge_1_f': [],
+            'rouge_2_f': [],
+            'rouge_l_f': [],
+            'length_ratio': [],
+            'exact_match': []
+        }
+        
         exact_matches = 0
-        semantic_scores = []
-        predictions = []
-        targets = []
         failed_predictions = 0
         
-        # Process samples
+        # Process each sample
         for i, item in enumerate(test_data, 1):
             clinical_text = item['clinical_text']
             target = item['target']
             
             # Get prediction
-            pred, metadata = self.inference.predict(clinical_text)
+            pred_response, _ = self.inference.predict(clinical_text, max_new_tokens=50)
             
-            predictions.append(pred)
-            targets.append(target)
+            all_predictions.append(pred_response)
+            all_targets.append(target)
             
-            if not pred:
+            if not pred_response:
                 failed_predictions += 1
-                semantic_scores.append(0.0)
+                # Add zeros for failed predictions
+                for metric in all_similarities:
+                    all_similarities[metric].append(0.0)
                 continue
             
-            # Calculate scores
-            if pred.lower().strip() == target.lower().strip():
+            # Check exact match
+            if pred_response.lower().strip() == target.lower().strip():
                 exact_matches += 1
             
-            semantic_score = self.evaluate_semantic_similarity(pred, target)
-            semantic_scores.append(semantic_score)
+            # Calculate all similarities
+            similarities = self.calculate_all_similarities(pred_response, target)
+            
+            for metric, score in similarities.items():
+                all_similarities[metric].append(score)
             
             # Progress update
             if i % 100 == 0 or i == len(test_data):
-                current_exact = exact_matches / i
-                current_semantic = np.mean(semantic_scores)
-                print(f"Progress {i}/{len(test_data)}: Exact={current_exact:.1%}, Semantic={current_semantic:.3f}")
+                print(f"Progress: {i}/{len(test_data)} ({i/len(test_data)*100:.1f}%)")
         
-        # Final metrics
-        exact_accuracy = exact_matches / len(test_data)
-        mean_semantic_score = np.mean(semantic_scores)
-        failed_rate = failed_predictions / len(test_data)
-        
-        # Additional analysis
-        high_semantic_matches = sum(1 for s in semantic_scores if s > 0.7)
-        high_semantic_rate = high_semantic_matches / len(test_data)
-        
+        # Calculate statistics for each metric
         results = {
-            'exact_accuracy': exact_accuracy,
-            'mean_semantic_score': mean_semantic_score,
-            'high_semantic_rate': high_semantic_rate,  # >0.7 semantic similarity
-            'failed_prediction_rate': failed_rate,
-            'n_samples': len(test_data),
-            'exact_matches': exact_matches,
-            'failed_predictions': failed_predictions,
-            'predictions': predictions,
-            'targets': targets,
-            'semantic_scores': semantic_scores
+            'basic_stats': {
+                'total_samples': len(test_data),
+                'exact_matches': exact_matches,
+                'exact_accuracy': exact_matches / len(test_data),
+                'failed_predictions': failed_predictions,
+                'failed_rate': failed_predictions / len(test_data)
+            }
         }
         
-        print("\n" + "="*60)
-        print("GENERATIVE EVALUATION RESULTS")
-        print("="*60)
-        print(f"Exact Match Accuracy: {exact_accuracy:.1%}")
-        print(f"Mean Semantic Score: {mean_semantic_score:.3f}")
-        print(f"High Semantic Match Rate (>0.7): {high_semantic_rate:.1%}")
-        print(f"Failed Prediction Rate: {failed_rate:.1%}")
+        # Add threshold statistics for each similarity metric with appropriate thresholds
+        metric_threshold_map = {
+            'word_similarity': 'jaccard',  # Word overlap is similar to Jaccard
+            'character_similarity': 'general',
+            'jaccard_index': 'jaccard',    # Classic Jaccard index
+            'cosine_similarity': 'general',
+            'clinical_bert': 'bert',
+            'general_bert': 'bert',
+            'bleu_1': 'text_gen',
+            'bleu_2': 'text_gen', 
+            'bleu_3': 'text_gen',
+            'bleu_4': 'text_gen',
+            'rouge_1_f': 'text_gen',
+            'rouge_2_f': 'text_gen',
+            'rouge_l_f': 'text_gen',
+            'length_ratio': 'general',
+            'exact_match': 'general'
+        }
         
-        # Show some examples
-        print(f"\nExample Predictions:")
-        for i in range(min(5, len(predictions))):
-            print(f"{i+1}. Input: {test_data[i]['clinical_text'][:100]}...")
-            print(f"   Predicted: {predictions[i]}")
-            print(f"   Target: {targets[i]}")
-            print(f"   Semantic Score: {semantic_scores[i]:.3f}")
-            print()
+        for metric_name, scores in all_similarities.items():
+            threshold_type = metric_threshold_map.get(metric_name, 'general')
+            results[f'{metric_name}_stats'] = self.calculate_threshold_stats(scores, threshold_type)
+        
+        # Store raw data
+        results['raw_data'] = {
+            'predictions': all_predictions,
+            'targets': all_targets,
+            'similarities': all_similarities
+        }
+        
+        # Generate confusion matrix
+        print("Generating confusion matrix for top 20 diagnoses...")
+        top_diagnoses = self.extract_top_diagnoses(all_targets, top_k=20)
+        pred_labels, true_labels = self.create_confusion_matrix_data(all_predictions, all_targets, top_diagnoses)
+        cm, cm_labels = self.plot_confusion_matrix(true_labels, pred_labels)
+        
+        results['confusion_matrix'] = cm.tolist() if cm is not None else None
+        results['confusion_matrix_labels'] = cm_labels
+        results['top_diagnoses'] = top_diagnoses
+        
+        # Print results
+        self._print_results(results)
         
         return results
+    
+    def _print_results(self, results: Dict):
+        """Print evaluation results in a clear format"""
+        print("\n" + "="*80)
+        print("SIMPLE MEDICAL EVALUATION RESULTS")
+        print("="*80)
+        
+        basic = results['basic_stats']
+        print(f"\nBASIC METRICS:")
+        print(f"Total Samples: {basic['total_samples']}")
+        print(f"Exact Matches: {basic['exact_matches']} ({basic['exact_accuracy']:.1%})")
+        print(f"Failed Predictions: {basic['failed_predictions']} ({basic['failed_rate']:.1%})")
+        
+        # Print each similarity metric with appropriate threshold descriptions
+        metric_info = {
+            'word_similarity': ('WORD-TO-WORD SIMILARITY (Jaccard)', 'jaccard'),
+            'character_similarity': ('CHARACTER-TO-CHARACTER SIMILARITY', 'general'),
+            'jaccard_index': ('JACCARD INDEX (Character Level)', 'jaccard'),
+            'cosine_similarity': ('COSINE SIMILARITY', 'general'),
+            'clinical_bert': ('CLINICAL BERT SIMILARITY', 'bert'),
+            'general_bert': ('GENERAL BERT SIMILARITY', 'bert'),
+            'bleu_1': ('BLEU-1 SCORE', 'text_gen'),
+            'bleu_2': ('BLEU-2 SCORE', 'text_gen'),
+            'bleu_4': ('BLEU-4 SCORE', 'text_gen'),
+            'rouge_1_f': ('ROUGE-1 F1 SCORE', 'text_gen'),
+            'rouge_l_f': ('ROUGE-L F1 SCORE', 'text_gen'),
+            'length_ratio': ('LENGTH RATIO', 'general'),
+            'exact_match': ('EXACT MATCH RATE', 'general')
+        }
+        
+        for metric, (display_name, threshold_type) in metric_info.items():
+            stats = results.get(f'{metric}_stats', {})
+            if not stats:
+                continue
+                
+            print(f"\n{display_name}:")
+            print(f"  Thresholds: {stats['threshold_description']}")
+            print(f"  Mean Score: {stats['mean_score']:.3f} (Range: {stats['min_score']:.3f} - {stats['max_score']:.3f})")
+            print(f"  High: {stats['high_count']} samples ({stats['high_percentage']:.1f}%)")
+            print(f"  Medium: {stats['medium_count']} samples ({stats['medium_percentage']:.1f}%)")
+            print(f"  Low: {stats['low_count']} samples ({stats['low_percentage']:.1f}%)")
+            print(f"  Very Low: {stats['very_low_count']} samples ({stats['very_low_percentage']:.1f}%)")
+        
+        # Compare BERT models
+        if results.get('clinical_bert_stats') and results.get('general_bert_stats'):
+            clinical_mean = results['clinical_bert_stats']['mean_score']
+            general_mean = results['general_bert_stats']['mean_score']
+            
+            print(f"\nBERT MODEL COMPARISON:")
+            print(f"Clinical BERT Mean: {clinical_mean:.3f}")
+            print(f"General BERT Mean: {general_mean:.3f}")
+            
+            if clinical_mean > general_mean:
+                diff = clinical_mean - general_mean
+                improvement = (diff / general_mean) * 100 if general_mean > 0 else 0
+                print(f"Clinical BERT is better by {diff:.3f} points ({improvement:.1f}% improvement)")
+            elif general_mean > clinical_mean:
+                diff = general_mean - clinical_mean
+                improvement = (diff / clinical_mean) * 100 if clinical_mean > 0 else 0
+                print(f"General BERT is better by {diff:.3f} points ({improvement:.1f}% improvement)")
+            else:
+                print("Both BERT models perform similarly")
+        
+        # Show some examples
+        print(f"\nSAMPLE PREDICTIONS (first 3):")
+        predictions = results['raw_data']['predictions']
+        targets = results['raw_data']['targets']
+        similarities = results['raw_data']['similarities']
+        
+        for i in range(min(3, len(predictions))):
+            print(f"\nExample {i+1}:")
+            print(f"  Predicted: {predictions[i]}")
+            print(f"  Target: {targets[i]}")
+            print(f"  Word Sim: {similarities['word_similarity'][i]:.3f}")
+            print(f"  Char Sim: {similarities['character_similarity'][i]:.3f}")
+            print(f"  Jaccard: {similarities['jaccard_index'][i]:.3f}")
+            print(f"  Cosine: {similarities['cosine_similarity'][i]:.3f}")
+            if similarities['clinical_bert'][i] > 0:
+                print(f"  Clinical BERT: {similarities['clinical_bert'][i]:.3f}")
+            if similarities['general_bert'][i] > 0:
+                print(f"  General BERT: {similarities['general_bert'][i]:.3f}")
+            if TEXT_METRICS_AVAILABLE:
+                print(f"  BLEU-1: {similarities['bleu_1'][i]:.3f}")
+                print(f"  BLEU-4: {similarities['bleu_4'][i]:.3f}")
+                print(f"  ROUGE-1: {similarities['rouge_1_f'][i]:.3f}")
+                print(f"  ROUGE-L: {similarities['rouge_l_f'][i]:.3f}")
 
 # =========================================================================
 # Main Functions
@@ -857,647 +1393,76 @@ def main_generative_finetune():
         traceback.print_exc()
         return False
 
-# =========================================================================
-# Enhanced Comprehensive Evaluation for CSS Dataset (Single Diagnosis)
-# Add this after your existing GenerativeEvaluator class in dafinetuningcss.py
-# =========================================================================
-
-# Additional imports to add at the top of your dafinetuningcss.py file
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend for headless environment
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import confusion_matrix, classification_report
-from sklearn.metrics.pairwise import cosine_similarity
-
-# Text generation metrics
-try:
-    from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
-    from rouge_score import rouge_scorer
-    import nltk
-    nltk.download('punkt', quiet=True)
-    NLTK_AVAILABLE = True
-except ImportError:
-    NLTK_AVAILABLE = False
-
-# BERT embeddings
-try:
-    from sentence_transformers import SentenceTransformer
-    SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    try:
-        from transformers import AutoTokenizer, AutoModel
-        BERT_TRANSFORMERS_AVAILABLE = True
-        SENTENCE_TRANSFORMERS_AVAILABLE = False
-    except ImportError:
-        BERT_TRANSFORMERS_AVAILABLE = False
-        SENTENCE_TRANSFORMERS_AVAILABLE = False
-
-class ComprehensiveMedicalEvaluatorCSS:
-    """Enhanced evaluator with BERT embeddings, text generation metrics, and FIXED BERT thresholds"""
-    
-    def __init__(self, inference_model):
-        self.inference = inference_model
-        
-        # Initialize BERT model for embeddings
-        self.bert_model = None
-        self.bert_tokenizer = None
-        self._init_bert_model()
-        
-        # Initialize text generation scorers
-        self.rouge_scorer = None
-        self.smoothing_function = None
-        if NLTK_AVAILABLE:
-            self.rouge_scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-            self.smoothing_function = SmoothingFunction().method1
-        
-        # FIXED EVALUATION THRESHOLDS - Separate for Jaccard and BERT
-        self.jaccard_thresholds = {
-            'high': 0.7,
-            'medium': 0.5,
-            'low': 0.3
-        }
-        
-        self.bert_thresholds = {
-            'high': 0.6,    # Lowered from 0.7
-            'medium': 0.4,  # Lowered from 0.5
-            'low': 0.2      # Lowered from 0.3
-        }
-        
-        # Medical diagnosis categories for confusion matrix
-        self.top_diagnoses = []
-        
-    def _init_bert_model(self):
-        """Initialize BERT model for semantic similarity"""
-        try:
-            if SENTENCE_TRANSFORMERS_AVAILABLE:
-                self.bert_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-                print("✅ Loaded SentenceTransformer model for BERT embeddings")
-            elif BERT_TRANSFORMERS_AVAILABLE:
-                model_name = 'bert-base-uncased'
-                self.bert_tokenizer = AutoTokenizer.from_pretrained(model_name)
-                self.bert_model = AutoModel.from_pretrained(model_name)
-                print("✅ Loaded BERT model for embeddings")
-            else:
-                print("⚠️  BERT embeddings not available")
-        except Exception as e:
-            print(f"⚠️  Failed to load BERT model: {e}")
-            self.bert_model = None
-
-    def get_bert_embeddings(self, texts: List[str]) -> np.ndarray:
-        """Get BERT embeddings for a list of texts"""
-        if not self.bert_model:
-            return None
-            
-        try:
-            if SENTENCE_TRANSFORMERS_AVAILABLE:
-                embeddings = self.bert_model.encode(texts, convert_to_tensor=False)
-                return np.array(embeddings)
-            elif BERT_TRANSFORMERS_AVAILABLE:
-                import torch
-                embeddings = []
-                for text in texts:
-                    inputs = self.bert_tokenizer(text, return_tensors='pt', truncation=True, max_length=512, padding=True)
-                    with torch.no_grad():
-                        outputs = self.bert_model(**inputs)
-                        embedding = outputs.last_hidden_state[:, 0, :].cpu().numpy()
-                        embeddings.append(embedding[0])
-                return np.array(embeddings)
-        except Exception as e:
-            print(f"Error getting BERT embeddings: {e}")
-            return None
-
-    def calculate_bert_similarity(self, pred: str, target: str) -> float:
-        """Calculate BERT-based semantic similarity"""
-        if not self.bert_model or not pred or not target:
-            return 0.0
-            
-        try:
-            embeddings = self.get_bert_embeddings([pred, target])
-            if embeddings is None or len(embeddings) != 2:
-                return 0.0
-            
-            similarity = cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]
-            return max(0.0, float(similarity))
-        except Exception as e:
-            print(f"Error calculating BERT similarity: {e}")
-            return 0.0
-
-    def calculate_text_generation_metrics(self, predicted: str, target: str) -> Dict[str, float]:
-        """Calculate BLEU, ROUGE, and other text generation metrics"""
-        metrics = {
-            'bleu_1': 0.0, 'bleu_2': 0.0, 'bleu_3': 0.0, 'bleu_4': 0.0,
-            'rouge_1_f': 0.0, 'rouge_2_f': 0.0, 'rouge_l_f': 0.0,
-            'length_ratio': 0.0, 'exact_match': 0.0
-        }
-        
-        if not predicted or not target:
-            return metrics
-        
-        # Exact match
-        metrics['exact_match'] = 1.0 if predicted.lower().strip() == target.lower().strip() else 0.0
-        
-        # Length ratio
-        pred_len = len(predicted.split())
-        target_len = len(target.split())
-        if target_len > 0:
-            metrics['length_ratio'] = pred_len / target_len
-        
-        if not NLTK_AVAILABLE:
-            return metrics
-            
-        try:
-            # BLEU scores
-            pred_tokens = predicted.lower().split()
-            target_tokens = target.lower().split()
-            
-            if len(pred_tokens) > 0 and len(target_tokens) > 0:
-                for n in range(1, 5):
-                    try:
-                        bleu_score = sentence_bleu(
-                            [target_tokens], pred_tokens, 
-                            weights=tuple([1/n]*n + [0]*(4-n)),
-                            smoothing_function=self.smoothing_function
-                        )
-                        metrics[f'bleu_{n}'] = bleu_score
-                    except:
-                        metrics[f'bleu_{n}'] = 0.0
-            
-            # ROUGE scores
-            if self.rouge_scorer:
-                rouge_scores = self.rouge_scorer.score(target, predicted)
-                metrics['rouge_1_f'] = rouge_scores['rouge1'].fmeasure
-                metrics['rouge_2_f'] = rouge_scores['rouge2'].fmeasure
-                metrics['rouge_l_f'] = rouge_scores['rougeL'].fmeasure
-                
-        except Exception as e:
-            print(f"Error calculating text generation metrics: {e}")
-            
-        return metrics
-
-    def extract_top_diagnoses(self, targets: List[str], top_k: int = 20) -> List[str]:
-        """Extract top K most common diagnoses from targets for confusion matrix"""
-        diagnoses = []
-        
-        for target in targets:
-            if target:
-                # Clean and normalize diagnosis
-                diagnosis = target.lower().strip()
-                # Remove common prefixes/suffixes for better grouping
-                diagnosis = re.sub(r'^(acute|chronic|severe|mild)\s+', '', diagnosis)
-                diagnoses.append(diagnosis)
-        
-        # Get top K most common
-        diagnosis_counts = Counter(diagnoses)
-        top_diagnoses = [diag for diag, _ in diagnosis_counts.most_common(top_k)]
-        
-        return top_diagnoses
-
-    def create_confusion_matrix_data(self, predictions: List[str], targets: List[str], 
-                                   top_diagnoses: List[str]) -> Tuple[List[str], List[str]]:
-        """Create confusion matrix data for top diagnoses"""
-        pred_labels = []
-        true_labels = []
-        
-        for pred, target in zip(predictions, targets):
-            # Normalize for comparison
-            pred_clean = pred.lower().strip() if pred else ""
-            target_clean = target.lower().strip() if target else ""
-            
-            # Remove common prefixes for better matching
-            pred_clean = re.sub(r'^(acute|chronic|severe|mild)\s+', '', pred_clean)
-            target_clean = re.sub(r'^(acute|chronic|severe|mild)\s+', '', target_clean)
-            
-            # Map to top diagnoses or "Other"
-            pred_label = pred_clean if pred_clean in top_diagnoses else "Other"
-            true_label = target_clean if target_clean in top_diagnoses else "Other"
-            
-            pred_labels.append(pred_label)
-            true_labels.append(true_label)
-        
-        return pred_labels, true_labels
-
-    def plot_confusion_matrix(self, y_true: List[str], y_pred: List[str], 
-                            title: str = "Confusion Matrix - Top 20 Diagnoses (CSS Dataset)"):
-        """Create and save confusion matrix plot"""
-        try:
-            # Get unique labels
-            all_labels = sorted(list(set(y_true + y_pred)))
-            
-            # Create confusion matrix
-            cm = confusion_matrix(y_true, y_pred, labels=all_labels)
-            
-            # Create plot
-            plt.figure(figsize=(15, 12))
-            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                       xticklabels=all_labels, yticklabels=all_labels)
-            plt.title(title, fontsize=14, fontweight='bold')
-            plt.xlabel('Predicted Diagnosis', fontsize=12)
-            plt.ylabel('True Diagnosis', fontsize=12)
-            plt.xticks(rotation=45, ha='right')
-            plt.yticks(rotation=0)
-            plt.tight_layout()
-            
-            # Save plot
-            plt.savefig('confusion_matrix_css_top20.png', dpi=300, bbox_inches='tight')
-            plt.savefig('confusion_matrix_css_top20.pdf', bbox_inches='tight')
-            print("📊 Confusion matrix saved as 'confusion_matrix_css_top20.png' and 'confusion_matrix_css_top20.pdf'")
-            
-            return cm, all_labels
-            
-        except Exception as e:
-            print(f"Error creating confusion matrix: {e}")
-            return None, None
-
-    def evaluate_semantic_similarity(self, pred: str, target: str) -> float:
-        """Calculate semantic similarity between predicted and target diagnosis (same as original)"""
-        if not pred or not target:
-            return 0.0
-            
-        # Simple exact match
-        if pred.lower().strip() == target.lower().strip():
-            return 1.0
-        
-        # Partial matching strategies
-        pred_words = set(pred.lower().split())
-        target_words = set(target.lower().split())
-        
-        # Jaccard similarity
-        if len(pred_words | target_words) == 0:
-            return 0.0
-        
-        jaccard = len(pred_words & target_words) / len(pred_words | target_words)
-        
-        # Check if key medical terms match
-        key_medical_overlap = 0
-        medical_terms = {'disease', 'syndrome', 'disorder', 'infection', 'cancer', 
-                        'failure', 'deficiency', 'injury', 'pain', 'inflammation',
-                        'hypertension', 'diabetes', 'pneumonia', 'fracture', 'anemia'}
-        
-        pred_medical = pred_words & medical_terms
-        target_medical = target_words & medical_terms
-        
-        if pred_medical and target_medical:
-            key_medical_overlap = len(pred_medical & target_medical) / max(len(pred_medical), len(target_medical))
-        
-        # Weighted score
-        return 0.7 * jaccard + 0.3 * key_medical_overlap
-
-    def comprehensive_evaluation(self, test_file: str, max_samples: int = 20000) -> Dict:
-        """Run comprehensive evaluation with FIXED BERT thresholds for CSS dataset"""
-        if max_samples is None:
-            print(f"Starting comprehensive CSS evaluation on FULL dataset...")
-        else:
-            print(f"Starting comprehensive CSS evaluation on up to {max_samples} samples...")
-        
-        # Load test data
-        with open(test_file, "r", encoding="utf-8") as f:
-            test_data = json.load(f)
-        
-        if max_samples is not None:
-            test_data = test_data[:max_samples]
-            print(f"Evaluating on {len(test_data)} samples (limited)")
-        else:
-            print(f"Evaluating on full dataset: {len(test_data)} samples")
-        
-        # Initialize tracking variables
-        all_predictions = []
-        all_targets = []
-        exact_matches = 0
-        semantic_scores = []
-        bert_scores = []
-        all_text_gen_metrics = []
-        failed_predictions = 0
-        
-        # FIXED: Separate counters for Jaccard and BERT similarities
-        jaccard_counters = {
-            'high': 0, 'medium': 0, 'low': 0
-        }
-        
-        bert_counters = {
-            'high': 0, 'medium': 0, 'low': 0
-        }
-        
-        # Process each sample
-        print("Processing samples...")
-        for i, item in enumerate(test_data, 1):
-            clinical_text = item['clinical_text']
-            target = item['target']
-            
-            # Get prediction
-            pred_response, metadata = self.inference.predict(clinical_text, max_new_tokens=50)
-            all_predictions.append(pred_response)
-            all_targets.append(target)
-            
-            if not pred_response:
-                failed_predictions += 1
-                semantic_scores.append(0.0)
-                bert_scores.append(0.0)
-                all_text_gen_metrics.append({})
-                continue
-            
-            # Calculate exact match
-            if pred_response.lower().strip() == target.lower().strip():
-                exact_matches += 1
-            
-            # Calculate Jaccard semantic similarity
-            semantic_score = self.evaluate_semantic_similarity(pred_response, target)
-            semantic_scores.append(semantic_score)
-            
-            # Calculate BERT similarity
-            bert_score = self.calculate_bert_similarity(pred_response, target)
-            bert_scores.append(bert_score)
-            
-            # Calculate text generation metrics
-            text_gen_metrics = self.calculate_text_generation_metrics(pred_response, target)
-            all_text_gen_metrics.append(text_gen_metrics)
-            
-            # FIXED: Update counters with SEPARATE thresholds
-            # Jaccard-based counters
-            if semantic_score >= self.jaccard_thresholds['high']:
-                jaccard_counters['high'] += 1
-            elif semantic_score >= self.jaccard_thresholds['medium']:
-                jaccard_counters['medium'] += 1
-            elif semantic_score >= self.jaccard_thresholds['low']:
-                jaccard_counters['low'] += 1
-            
-            # BERT-based counters
-            if bert_score >= self.bert_thresholds['high']:
-                bert_counters['high'] += 1
-            elif bert_score >= self.bert_thresholds['medium']:
-                bert_counters['medium'] += 1
-            elif bert_score >= self.bert_thresholds['low']:
-                bert_counters['low'] += 1
-            
-            # Progress update
-            if i % 100 == 0 or i == len(test_data):
-                progress = i / len(test_data) * 100
-                print(f"Progress: {i}/{len(test_data)} ({progress:.1f}%)")
-        
-        # Calculate final metrics with FIXED naming
-        n_samples = len(test_data)
-        results = {
-            # Basic accuracy metrics
-            'exact_accuracy': exact_matches / n_samples,
-            'failed_prediction_rate': failed_predictions / n_samples,
-            
-            # Jaccard semantic similarity metrics
-            'mean_semantic_score': np.mean(semantic_scores),
-            'median_semantic_score': np.median(semantic_scores),
-            'std_semantic_score': np.std(semantic_scores),
-            
-            # BERT similarity metrics
-            'mean_bert_score': np.mean(bert_scores) if bert_scores else 0.0,
-            'median_bert_score': np.median(bert_scores) if bert_scores else 0.0,
-            'std_bert_score': np.std(bert_scores) if bert_scores else 0.0,
-            
-            # Text generation metrics
-            'mean_bleu_1': np.mean([m.get('bleu_1', 0) for m in all_text_gen_metrics]) if all_text_gen_metrics else 0.0,
-            'mean_bleu_2': np.mean([m.get('bleu_2', 0) for m in all_text_gen_metrics]) if all_text_gen_metrics else 0.0,
-            'mean_bleu_4': np.mean([m.get('bleu_4', 0) for m in all_text_gen_metrics]) if all_text_gen_metrics else 0.0,
-            'mean_rouge_1': np.mean([m.get('rouge_1_f', 0) for m in all_text_gen_metrics]) if all_text_gen_metrics else 0.0,
-            'mean_rouge_l': np.mean([m.get('rouge_l_f', 0) for m in all_text_gen_metrics]) if all_text_gen_metrics else 0.0,
-            'exact_match_rate': np.mean([m.get('exact_match', 0) for m in all_text_gen_metrics]) if all_text_gen_metrics else 0.0,
-            'mean_length_ratio': np.mean([m.get('length_ratio', 0) for m in all_text_gen_metrics]) if all_text_gen_metrics else 0.0,
-            
-            # FIXED: Separate threshold-based rates for Jaccard and BERT
-            'jaccard_high_rate': jaccard_counters['high'] / n_samples,
-            'jaccard_medium_rate': jaccard_counters['medium'] / n_samples,
-            'jaccard_low_rate': jaccard_counters['low'] / n_samples,
-            
-            'bert_high_rate': bert_counters['high'] / n_samples,
-            'bert_medium_rate': bert_counters['medium'] / n_samples,
-            'bert_low_rate': bert_counters['low'] / n_samples,
-            
-            # Count metrics
-            'n_samples': n_samples,
-            'exact_matches': exact_matches,
-            'failed_predictions': failed_predictions,
-            
-            # Raw data for further analysis
-            'predictions': all_predictions,
-            'targets': all_targets,
-            'semantic_scores': semantic_scores,
-            'bert_scores': bert_scores,
-            'all_text_gen_metrics': all_text_gen_metrics
-        }
-        
-        # Generate confusion matrix
-        print("Generating confusion matrix for top 20 diagnoses...")
-        self.top_diagnoses = self.extract_top_diagnoses(all_targets, top_k=20)
-        pred_labels, true_labels = self.create_confusion_matrix_data(
-            all_predictions, all_targets, self.top_diagnoses
-        )
-        
-        cm, cm_labels = self.plot_confusion_matrix(true_labels, pred_labels)
-        results['confusion_matrix'] = cm.tolist() if cm is not None else None
-        results['confusion_matrix_labels'] = cm_labels
-        results['top_diagnoses'] = self.top_diagnoses
-        
-        # Print comprehensive results
-        self._print_comprehensive_results(results)
-        
-        # Show sample examples
-        self._show_sample_examples(test_data, all_predictions, all_targets, semantic_scores, bert_scores)
-        
-        return results
-
-    def _print_comprehensive_results(self, results: Dict):
-        """Print comprehensive evaluation results with FIXED BERT threshold reporting"""
-        print("\n" + "="*80)
-        print("COMPREHENSIVE CSS MEDICAL DIAGNOSIS EVALUATION RESULTS")
-        print("="*80)
-        
-        print("\n📊 BASIC ACCURACY METRICS")
-        print(f"Exact Match Accuracy:             {results['exact_accuracy']:.1%}")
-        print(f"Failed Prediction Rate:           {results['failed_prediction_rate']:.1%}")
-        
-        print("\n🔍 JACCARD SEMANTIC SIMILARITY METRICS")
-        print(f"Mean Jaccard Score:               {results['mean_semantic_score']:.3f}")
-        print(f"Median Jaccard Score:             {results['median_semantic_score']:.3f}")
-        print(f"Std Dev Jaccard Score:            {results['std_semantic_score']:.3f}")
-        
-        if results['mean_bert_score'] > 0:
-            print("\n🤖 BERT SIMILARITY METRICS")
-            print(f"Mean BERT Similarity:             {results['mean_bert_score']:.3f}")
-            print(f"Median BERT Similarity:           {results['median_bert_score']:.3f}")
-            print(f"Std Dev BERT Similarity:          {results['std_bert_score']:.3f}")
-        
-        if results['mean_bleu_1'] > 0:
-            print("\n📝 TEXT GENERATION METRICS")
-            print(f"BLEU-1 Score:                    {results['mean_bleu_1']:.3f}")
-            print(f"BLEU-2 Score:                    {results['mean_bleu_2']:.3f}")
-            print(f"BLEU-4 Score:                    {results['mean_bleu_4']:.3f}")
-            print(f"ROUGE-1 F1 Score:                {results['mean_rouge_1']:.3f}")
-            print(f"ROUGE-L F1 Score:                {results['mean_rouge_l']:.3f}")
-            print(f"Exact Match Rate:                {results['exact_match_rate']:.1%}")
-            print(f"Mean Length Ratio:               {results['mean_length_ratio']:.2f}")
-        
-        print("\n🎯 JACCARD SIMILARITY THRESHOLD ANALYSIS")
-        print(f"Jaccard High (≥0.7):             {results['jaccard_high_rate']:.1%}")
-        print(f"Jaccard Medium (≥0.5):           {results['jaccard_medium_rate']:.1%}")
-        print(f"Jaccard Low (≥0.3):              {results['jaccard_low_rate']:.1%}")
-        
-        if results['mean_bert_score'] > 0:
-            print("\n🤖 BERT SIMILARITY THRESHOLD ANALYSIS")
-            print(f"BERT High (≥0.6):               {results['bert_high_rate']:.1%}")
-            print(f"BERT Medium (≥0.4):             {results['bert_medium_rate']:.1%}")
-            print(f"BERT Low (≥0.2):                {results['bert_low_rate']:.1%}")
-    def _show_sample_examples(self, test_data: List[Dict], predictions: List[str], 
-                             targets: List[str], semantic_scores: List[float], bert_scores: List[float]):
-        """Show sample examples with all metrics"""
-        print(f"\n📋 SAMPLE PREDICTIONS (Top 5):")
-        print("="*80)
-        
-        for i in range(min(5, len(predictions))):
-            print(f"\n🔸 Example {i+1}:")
-            print(f"Clinical Text: {test_data[i]['clinical_text'][:150]}...")
-            print(f"Predicted: {predictions[i]}")
-            print(f"Target: {targets[i]}")
-            
-            print(f"\n📈 Scores:")
-            print(f"  Semantic Score: {semantic_scores[i]:.3f}")
-            if i < len(bert_scores) and bert_scores[i] > 0:
-                print(f"  BERT Score: {bert_scores[i]:.3f}")
-            exact_match = "Yes" if predictions[i].lower().strip() == targets[i].lower().strip() else "No"
-            print(f"  Exact Match: {exact_match}")
-            print("-" * 60)
-
-# Replace your existing main_generative_inference function with this enhanced version:
-
-def main_generative_inference():
-    """Main function for comprehensive generative inference and evaluation"""
+def main_simple_evaluation():
+    """Main function using the simple evaluator"""
     model_path = "./generative_medical_lora/final_model"
     test_file = "./medical_datasets_llama3_improved/test_dataset.json"
     
-    print("COMPREHENSIVE CSS MEDICAL INFERENCE & EVALUATION")
-    print("="*80)
+    print("SIMPLE MEDICAL EVALUATION")
+    print("="*50)
     
     # Check required packages
     missing_packages = []
-    try:
-        import nltk
-        from rouge_score import rouge_scorer
-        print("✅ NLTK and ROUGE available for text generation metrics")
-    except ImportError:
-        missing_packages.append("nltk rouge-score")
-        print("⚠️  NLTK/ROUGE not available - will skip text generation metrics")
-    
-    try:
-        from sentence_transformers import SentenceTransformer
-        print("✅ SentenceTransformers available for BERT embeddings")
-    except ImportError:
-        try:
-            from transformers import AutoModel
-            print("✅ Basic BERT available for embeddings")
-        except ImportError:
-            missing_packages.append("sentence-transformers")
-            print("⚠️  BERT embeddings not available")
-    
-    try:
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-        print("✅ Plotting libraries available")
-    except ImportError:
+    if not SENTENCE_TRANSFORMERS_AVAILABLE:
+        missing_packages.append("sentence-transformers")
+    if not SKLEARN_AVAILABLE:
+        missing_packages.append("scikit-learn")
+    if not PLOTTING_AVAILABLE:
         missing_packages.append("matplotlib seaborn")
-        print("⚠️  Plotting not available - will skip confusion matrix visualization")
+    if not TEXT_METRICS_AVAILABLE:
+        missing_packages.append("nltk rouge-score")
+    # Remove the FuzzyWuzzy check since it's not used in the evaluator
     
     if missing_packages:
-        print(f"\n💡 To get full functionality, install: pip install {' '.join(missing_packages)}")
+        print(f"\nWarning: Missing packages for full functionality:")
+        print(f"Install with: pip install {' '.join(missing_packages)}")
+        print("Continuing with available features...\n")
     
     try:
         # Initialize inference
         inference = GenerativeMedicalInference(model_path)
         
         if not inference.load_finetuned_model():
-            print("❌ Failed to load generative model!")
+            print("Failed to load model!")
             return False
         
         # Test single prediction
-        print("\nTesting single prediction...")
+        print("Testing single prediction...")
         sample_text = "45 year old male with chest pain and shortness of breath, elevated troponins"
-        pred, meta = inference.predict(sample_text)
+        pred, _ = inference.predict(sample_text)
         print(f"Sample input: {sample_text}")
         print(f"Predicted diagnosis: {pred}")
         
-        # Initialize comprehensive evaluator
-        print("\nInitializing comprehensive evaluator...")
-        evaluator = ComprehensiveMedicalEvaluatorCSS(inference)
+        # Initialize simple evaluator
+        evaluator = SimpleMedicalEvaluator(inference)
         
-        # Run comprehensive evaluation
-        print("Starting comprehensive evaluation...")
-        results = evaluator.comprehensive_evaluation(test_file, max_samples=None)
+        # Run evaluation
+        results = evaluator.evaluate(test_file, max_samples=None)  # Test with all samples
         
-        # Save comprehensive results
-        results_file = "./comprehensive_evaluation_results_css.json"
-        
-        # Convert numpy arrays to JSON-compatible format
-        json_results = {}
-        for k, v in results.items():
-            if isinstance(v, np.ndarray):
-                json_results[k] = v.tolist()
-            elif isinstance(v, (np.floating, np.integer)):
-                json_results[k] = float(v)
-            elif isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict):
-                json_results[k] = [
-                    {inner_k: float(inner_v) if isinstance(inner_v, (np.floating, np.integer)) else inner_v 
-                     for inner_k, inner_v in item.items()} 
-                    for item in v
-                ]
-            else:
-                json_results[k] = v
-        
-        # Save results with metadata
-        with open(results_file, 'w') as f:
-            json.dump({
-                'evaluation_type': 'comprehensive_css_medical_diagnosis',
-                'model_path': model_path,
-                'test_file': test_file,
-                'timestamp': pd.Timestamp.now().isoformat(),
-                'results': json_results,
-                'missing_packages': missing_packages,
-                'evaluation_settings': {
-                    'max_samples': None,
-                    'semantic_thresholds': evaluator.semantic_thresholds,
-                    'top_diagnoses_count': 20
-                }
-            }, f, indent=2)
-        
-        print(f"\n📊 Comprehensive results saved to: {results_file}")
-        
-        # Additional analysis
-        print(f"\n📋 EVALUATION SUMMARY")
-        print("="*60)
-        print(f"Total samples evaluated: {results['n_samples']}")
-        print(f"Failed predictions: {results['failed_predictions']}")
-        print(f"Success rate: {(1 - results['failed_prediction_rate']):.1%}")
-        
-        # Performance insights
-        if results.get('mean_bert_score', 0) > 0:
-            semantic_vs_bert = results['mean_semantic_score'] - results['mean_bert_score']
-            print(f"\n🎯 KEY INSIGHTS")
-            if abs(semantic_vs_bert) > 0.05:
-                if semantic_vs_bert > 0:
-                    print(f"Jaccard similarity outperforms BERT by {semantic_vs_bert:.3f} points")
+        # Save results
+        with open("simple_evaluation_results.json", "w") as f:
+            # Convert numpy types to regular types for JSON
+            clean_results = {}
+            for k, v in results.items():
+                if isinstance(v, dict):
+                    clean_results[k] = {}
+                    for inner_k, inner_v in v.items():
+                        if isinstance(inner_v, (np.floating, np.integer)):
+                            clean_results[k][inner_k] = float(inner_v)
+                        elif isinstance(inner_v, np.ndarray):
+                            clean_results[k][inner_k] = inner_v.tolist()
+                        else:
+                            clean_results[k][inner_k] = inner_v
                 else:
-                    print(f"BERT embeddings outperform Jaccard similarity by {-semantic_vs_bert:.3f} points")
+                    clean_results[k] = v
+            
+            json.dump(clean_results, f, indent=2)
         
-        # Save top diagnoses analysis
-        if 'top_diagnoses' in results:
-            top_diagnoses_file = "./top_diagnoses_analysis_css.txt"
-            with open(top_diagnoses_file, 'w') as f:
-                f.write("TOP 20 DIAGNOSES IN CSS TEST SET\n")
-                f.write("="*40 + "\n")
-                for i, diagnosis in enumerate(results['top_diagnoses'], 1):
-                    f.write(f"{i:2d}. {diagnosis}\n")
-            print(f"📋 Top diagnoses saved to: {top_diagnoses_file}")
-        
-        print("\n✅ Comprehensive CSS evaluation completed successfully!")
-        
+        print(f"\nResults saved to: simple_evaluation_results.json")
         return True
         
     except Exception as e:
-        print(f"Comprehensive evaluation error: {e}")
+        print(f"Evaluation failed: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -1513,7 +1478,11 @@ def setup_environment():
         "wandb",
         "numpy",
         "pandas",
-        "scikit-learn"
+        "scikit-learn",
+        "fuzzywuzzy[speedup]",
+        "sentence-transformers",
+        "matplotlib",
+        "seaborn"
     ]
     
     import subprocess
@@ -1522,12 +1491,16 @@ def setup_environment():
     print("Setting up environment...")
     for package in required_packages:
         try:
-            __import__(package.replace("-", "_"))
+            package_name = package.split('[')[0]  # Handle packages with extras like fuzzywuzzy[speedup]
+            __import__(package_name.replace("-", "_"))
             print(f"✅ {package} is already installed")
         except ImportError:
             print(f"⏳ Installing {package}...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-            print(f"✅ {package} installed successfully")
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+                print(f"✅ {package} installed successfully")
+            except subprocess.CalledProcessError as e:
+                print(f"❌ Failed to install {package}: {e}")
 
 def check_gpu_memory():
     """Check GPU memory and provide recommendations"""
@@ -1591,8 +1564,8 @@ if __name__ == "__main__":
             setup_environment()
             print("\n✅ Environment setup completed!")
             
-        elif command == "inference":
-            success = main_generative_inference()
+        elif command == "evaluate" or command == "inference":
+            success = main_simple_evaluation()
             
         elif command == "train":
             success = main_generative_finetune()
@@ -1602,7 +1575,7 @@ if __name__ == "__main__":
             print("Available commands:")
             print("  python script.py setup     - Setup environment")
             print("  python script.py train     - Run fine-tuning")
-            print("  python script.py inference - Run inference and evaluation")
+            print("  python script.py evaluate  - Run simple evaluation")
             success = False
     else:
         # Default to training
