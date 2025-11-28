@@ -270,7 +270,7 @@ training_args = TrainingArguments(
     output_dir='./clinical_bert_results',
     
     # Training parameters - OPTIMIZED FOR ACCURACY
-    num_train_epochs=10,             # 🔥 INCREASED from 5 to 10
+    num_train_epochs=10,             # 🔥 INCREASED from 2 to 10
     per_device_train_batch_size=64,  # Large batch for H100
     per_device_eval_batch_size=128,  # Even larger for eval
     gradient_accumulation_steps=1,
@@ -326,7 +326,7 @@ effective_batch_size = (
 total_steps = (len(train_dataset) // effective_batch_size) * training_args.num_train_epochs
 estimated_hours = total_steps * 0.5 / 3600  # Assume 0.5 sec/step
 
-print(f"\n✓ Epochs: {training_args.num_train_epochs} (was 5)")
+print(f"\n✓ Epochs: {training_args.num_train_epochs} (was 2)")
 print(f"✓ Batch size per device: {training_args.per_device_train_batch_size}")
 print(f"✓ Gradient accumulation steps: {training_args.gradient_accumulation_steps}")
 print(f"✓ Effective batch size: {effective_batch_size}")
