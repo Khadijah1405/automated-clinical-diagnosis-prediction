@@ -434,7 +434,7 @@ def main():
     print("\n" + "="*40)
     print("DATA PREPROCESSING")
     print("="*40)
-    df = classifier.load_and_preprocess_data('hcup_processed_medical_dataset_with_labels.csv', min_samples_per_class=20)
+    df = classifier.load_and_preprocess_data('hcup_processed_medical_dataset_with_labels.csv')
     
     # Create balanced splits
     train_df, val_df, test_df = classifier.create_balanced_split(df)
