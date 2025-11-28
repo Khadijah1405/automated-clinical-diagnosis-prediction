@@ -1,0 +1,45 @@
+FINAL HCUP MAPPING PROCESSING RESULTS
+============================================================
+
+TOTAL MAPPINGS PROCESSED: 90,310
+
+BY SOURCE:
+  ICD10_CCSR: 75,238 mappings
+  ICD9_CCS: 15,072 mappings
+
+UNIQUE CATEGORIES: 778
+  ICD-10 categories: 495
+  ICD-9 categories: 283
+
+SOLUTION TO YOUR 96% UNIQUE ICD PROBLEM:
+- Original problem: ICD codes were 96% unique
+- Solution: Group by 'category_code' column
+- Result: 538 categories instead of unique ICDs
+- Reduction: Massive improvement in data grouping capability
+
+USAGE INSTRUCTIONS:
+1. Use 'category_code' column for statistical analysis
+2. Use 'category_description' for human-readable labels
+3. Filter by 'source' if you want only ICD-9 or ICD-10
+
+TOP CATEGORIES:
+   1. 'XXX000' (ICD10_CCSR): 10,791 codes - Unacceptable PDX
+   2. 'INJ073' (ICD10_CCSR): 7,595 codes - Injury, sequela
+   3. 'INJ042' (ICD10_CCSR): 4,702 codes - Fracture of lower limb (except hip), subsequent encounter
+   4. 'INJ041' (ICD10_CCSR): 4,348 codes - Fracture of the upper limb, subsequent encounter
+   5. 'INJ004' (ICD10_CCSR): 1,555 codes - Fracture of the upper limb, initial encounter
+   6. 'INJ005' (ICD10_CCSR): 1,435 codes - Fracture of the lower limb (except hip), initial encounter
+   7. 'INJ019' (ICD10_CCSR): 936 codes - Burn and corrosion, initial encounter
+   8. 'INJ075' (ICD10_CCSR): 868 codes - Poisoning/toxic effect/adverse effects/underdosing, sequela
+   9. 'INJ043' (ICD10_CCSR): 832 codes - Fracture of the neck of the femur (hip), subsequent encounter
+  10. 'INJ056' (ICD10_CCSR): 824 codes - Burns and corrosion, subsequent encounter
+  11. 'EYE001' (ICD10_CCSR): 795 codes - Cornea and external disease
+  12. 'INJ054' (ICD10_CCSR): 755 codes - Superficial injury; contusion, subsequent encounter
+  13. 'INJ017' (ICD10_CCSR): 755 codes - Superficial injury; contusion, initial encounter
+  14. 'MUS007' (ICD10_CCSR): 703 codes - Other specified joint disorders
+  15. 'MUS028' (ICD10_CCSR): 637 codes - Other specified bone disease and musculoskeletal deformities
+  16. 'MUS015' (ICD10_CCSR): 624 codes - Pathological fracture, subsequent encounter
+  17. 'INJ049' (ICD10_CCSR): 606 codes - Open wounds to limbs, subsequent encounter
+  18. 'INJ012' (ICD10_CCSR): 606 codes - Open wounds to limbs, initial encounter
+  19. 'PRG013' (ICD10_CCSR): 602 codes - Maternal care related to fetal conditions
+  20. 'INJ053' (ICD10_CCSR): 571 codes - Injury to blood vessels, subsequent encounter
