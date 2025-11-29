@@ -2,7 +2,7 @@
 """
 Generative Medical Diagnosis: Direct LLaMA Text Generation with Hugging Face
 """
-
+ 
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = os.getenv("GPU_ID", "0")
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
